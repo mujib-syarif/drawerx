@@ -125,10 +125,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  TextStyle get _bodyFont {
-    return GoogleFonts.plusJakartaSans();
-  }
-
   TextStyle _font({
     double? size,
     FontWeight? weight,
