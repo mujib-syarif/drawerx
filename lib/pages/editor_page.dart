@@ -8,10 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 class EditorPage extends StatefulWidget {
   final Uint8List image;
 
-  const EditorPage({
-    super.key,
-    required this.image,
-  });
+  const EditorPage({super.key, required this.image});
 
   @override
   State<EditorPage> createState() => _EditorPageState();
@@ -21,15 +18,10 @@ class DrawingStroke {
   final List<Offset> points;
   final double brushSize;
 
-  DrawingStroke({
-    required this.points,
-    required this.brushSize,
-  });
+  DrawingStroke({required this.points, required this.brushSize});
 
-  DrawingStroke copy() => DrawingStroke(
-        points: List<Offset>.from(points),
-        brushSize: brushSize,
-      );
+  DrawingStroke copy() =>
+      DrawingStroke(points: List<Offset>.from(points), brushSize: brushSize);
 }
 
 class HeroObject {
@@ -50,13 +42,13 @@ class HeroObject {
   });
 
   HeroObject copy() => HeroObject(
-        id: id,
-        name: name,
-        assetPath: assetPath,
-        position: position,
-        scale: scale,
-        rotation: rotation,
-      );
+    id: id,
+    name: name,
+    assetPath: assetPath,
+    position: position,
+    scale: scale,
+    rotation: rotation,
+  );
 }
 
 class _EditorSnapshot {
@@ -101,7 +93,6 @@ class _EditorPageState extends State<EditorPage> {
 
   Matrix4 _transform = Matrix4.identity();
   double _scale = 1.0;
-  Offset _pan = Offset.zero;
   Size _canvasSize = Size.zero;
 
   final Map<int, Offset> _pointers = {};
@@ -125,26 +116,14 @@ class _EditorPageState extends State<EditorPage> {
       'Barbarian King',
       'assets/images/heroes/barbarian_king.png',
     ),
-    _HeroDefinition(
-      'Archer Queen',
-      'assets/images/heroes/archer_queen.png',
-    ),
-    _HeroDefinition(
-      'Minion Prince',
-      'assets/images/heroes/minion_prince.png',
-    ),
-    _HeroDefinition(
-      'Grand Warden',
-      'assets/images/heroes/grand_warden.png',
-    ),
+    _HeroDefinition('Archer Queen', 'assets/images/heroes/archer_queen.png'),
+    _HeroDefinition('Minion Prince', 'assets/images/heroes/minion_prince.png'),
+    _HeroDefinition('Grand Warden', 'assets/images/heroes/grand_warden.png'),
     _HeroDefinition(
       'Royal Champion',
       'assets/images/heroes/royal_champion.png',
     ),
-    _HeroDefinition(
-      'Dragon Duke',
-      'assets/images/heroes/dragon_duke.png',
-    ),
+    _HeroDefinition('Dragon Duke', 'assets/images/heroes/dragon_duke.png'),
   ];
 
   static const Color backgroundColor = Color(0xFF070B18);
@@ -166,11 +145,7 @@ class _EditorPageState extends State<EditorPage> {
     super.dispose();
   }
 
-  TextStyle _font({
-    double? size,
-    FontWeight? weight,
-    Color? color,
-  }) {
+  TextStyle _font({double? size, FontWeight? weight, Color? color}) {
     return GoogleFonts.plusJakartaSans(
       fontSize: size,
       fontWeight: weight,
@@ -246,7 +221,6 @@ class _EditorPageState extends State<EditorPage> {
   void _resetTransform() {
     setState(() {
       _scale = 1.0;
-      _pan = Offset.zero;
       _transform = Matrix4.identity();
     });
   }
@@ -334,7 +308,7 @@ class _EditorPageState extends State<EditorPage> {
     if (_movingHero != null) {
       _movingHero = null;
       _heroDragOffset = null;
-        return;
+      return;
     }
 
     _endDrawing();
@@ -350,7 +324,7 @@ class _EditorPageState extends State<EditorPage> {
       _wasMultiTouch = false;
       _lastFocalPoint = null;
       _lastDistance = null;
-      }
+    }
   }
 
   Offset _focalPoint(List<Offset> points) {
@@ -402,24 +376,17 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       _transform = next;
       _scale = newScale;
-      _pan += delta;
     });
 
     _lastFocalPoint = focal;
     _lastDistance = distance;
   }
 
-  void _startDrawing(
-    Offset screenPosition, {
-    required bool saveHistory,
-  }) {
+  void _startDrawing(Offset screenPosition, {required bool saveHistory}) {
     if (saveHistory) _saveHistory();
 
     final scenePosition = _screenToScene(screenPosition);
-    final stroke = DrawingStroke(
-      points: [scenePosition],
-      brushSize: brushSize,
-    );
+    final stroke = DrawingStroke(points: [scenePosition], brushSize: brushSize);
 
     setState(() {
       currentStroke = stroke;
@@ -478,10 +445,7 @@ class _EditorPageState extends State<EditorPage> {
       id: 'hero_${++_heroCounter}',
       name: definition.name,
       assetPath: definition.assetPath,
-      position: Offset(
-        canvasSize.width / 2,
-        canvasSize.height / 2,
-      ),
+      position: Offset(canvasSize.width / 2, canvasSize.height / 2),
       scale: 1.0,
     );
 
@@ -571,10 +535,7 @@ class _EditorPageState extends State<EditorPage> {
                 const SizedBox(height: 14),
                 Row(
                   children: [
-                    const Icon(
-                      Icons.shield_rounded,
-                      color: cyanColor,
-                    ),
+                    const Icon(Icons.shield_rounded, color: cyanColor),
                     const SizedBox(width: 10),
                     Text(
                       'Add Hero',
@@ -591,8 +552,7 @@ class _EditorPageState extends State<EditorPage> {
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: heroDefinitions.length,
-                  gridDelegate:
-                      const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 3,
                     crossAxisSpacing: 10,
                     mainAxisSpacing: 10,
@@ -686,9 +646,7 @@ class _EditorPageState extends State<EditorPage> {
           Container(
             width: 34,
             height: 34,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-            ),
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
               child: Image.asset(
@@ -775,10 +733,8 @@ class _EditorPageState extends State<EditorPage> {
 
             final imageWidthOnScreen = imageWidth * fitScale;
             final imageHeightOnScreen = imageHeight * fitScale;
-            final imageLeft =
-                (viewportWidth - imageWidthOnScreen) / 2;
-            final imageTop =
-                (viewportHeight - imageHeightOnScreen) / 2;
+            final imageLeft = (viewportWidth - imageWidthOnScreen) / 2;
+            final imageTop = (viewportHeight - imageHeightOnScreen) / 2;
 
             return Listener(
               behavior: HitTestBehavior.opaque,
@@ -1007,9 +963,7 @@ class _EditorPageState extends State<EditorPage> {
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 3),
                     child: Material(
-                      color: active
-                          ? activeColor
-                          : const Color(0xFF171C2E),
+                      color: active ? activeColor : const Color(0xFF171C2E),
                       borderRadius: BorderRadius.circular(13),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(13),
@@ -1087,10 +1041,7 @@ class _DrawingPainter extends CustomPainter {
       }
 
       final path = Path();
-      path.moveTo(
-        stroke.points.first.dx,
-        stroke.points.first.dy,
-      );
+      path.moveTo(stroke.points.first.dx, stroke.points.first.dy);
 
       for (int i = 1; i < stroke.points.length - 1; i++) {
         final current = stroke.points[i];
@@ -1109,12 +1060,7 @@ class _DrawingPainter extends CustomPainter {
 
       final previous = stroke.points[stroke.points.length - 2];
       final last = stroke.points.last;
-      path.quadraticBezierTo(
-        previous.dx,
-        previous.dy,
-        last.dx,
-        last.dy,
-      );
+      path.quadraticBezierTo(previous.dx, previous.dy, last.dx, last.dy);
 
       canvas.drawPath(path, paint);
     }
@@ -1128,10 +1074,7 @@ class _HeroPainter extends CustomPainter {
   final List<HeroObject> heroes;
   final String? selectedHeroId;
 
-  _HeroPainter({
-    required this.heroes,
-    required this.selectedHeroId,
-  });
+  _HeroPainter({required this.heroes, required this.selectedHeroId});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1150,11 +1093,7 @@ class _HeroPainter extends CustomPainter {
 
       canvas.drawRRect(
         RRect.fromRectAndRadius(
-          Rect.fromCenter(
-            center: Offset.zero,
-            width: 92,
-            height: 128,
-          ),
+          Rect.fromCenter(center: Offset.zero, width: 92, height: 128),
           const Radius.circular(10),
         ),
         borderPaint,
