@@ -17,11 +17,19 @@ class EditorPage extends StatefulWidget {
 class DrawingStroke {
   final List<Offset> points;
   final double brushSize;
+  final Color color;
 
-  DrawingStroke({required this.points, required this.brushSize});
+  DrawingStroke({
+    required this.points,
+    required this.brushSize,
+    required this.color,
+  });
 
-  DrawingStroke copy() =>
-      DrawingStroke(points: List<Offset>.from(points), brushSize: brushSize);
+  DrawingStroke copy() => DrawingStroke(
+    points: List<Offset>.from(points),
+    brushSize: brushSize,
+    color: color,
+  );
 }
 
 class HeroObject {
@@ -31,6 +39,8 @@ class HeroObject {
   Offset position;
   double scale;
   double rotation;
+  final double baseWidth;
+  final double baseHeight;
 
   HeroObject({
     required this.id,
@@ -39,6 +49,8 @@ class HeroObject {
     required this.position,
     this.scale = 1.0,
     this.rotation = 0.0,
+    this.baseWidth = _EditorPageState.heroBaseWidth,
+    this.baseHeight = _EditorPageState.heroBaseHeight,
   });
 
   HeroObject copy() => HeroObject(
@@ -48,6 +60,8 @@ class HeroObject {
     position: position,
     scale: scale,
     rotation: rotation,
+    baseWidth: baseWidth,
+    baseHeight: baseHeight,
   );
 }
 
@@ -93,12 +107,15 @@ class _EditorPageState extends State<EditorPage> {
 
   Matrix4 _transform = Matrix4.identity();
   double _scale = 1.0;
-  Size _canvasSize = Size.zero;
+  Rect _imageRect = Rect.zero;
+  Size _imageSize = Size.zero;
+  double _fitScale = 1.0;
 
   final Map<int, Offset> _pointers = {};
   Offset? _lastFocalPoint;
   double? _lastDistance;
   bool _wasMultiTouch = false;
+  Offset? _pendingDrawStart;
 
   HeroObject? _movingHero;
   Offset? _heroDragOffset;
@@ -108,8 +125,24 @@ class _EditorPageState extends State<EditorPage> {
   int _heroCounter = 0;
 
   double brushSize = 8.0;
+  Color brushColor = Colors.red;
 
-  static const List<double> brushSizes = [4, 8, 12, 20];
+  static const List<Color> brushColors = [
+    Colors.red,
+    Colors.orange,
+    Colors.yellow,
+    Colors.green,
+    Colors.cyan,
+    Colors.blue,
+    Colors.purple,
+    Colors.white,
+  ];
+
+  // Ukuran dasar Hero di canvas. Nilai ini sengaja dibuat lebih kecil
+  // supaya Hero tidak menutupi area base terlalu besar saat pertama ditambahkan.
+  static const double heroBaseWidth = 88.0;
+  static const double heroBaseHeight = 120.0;
+  static const double heroDefaultScale = 0.20;
 
   static const List<_HeroDefinition> heroDefinitions = [
     _HeroDefinition(
@@ -225,12 +258,36 @@ class _EditorPageState extends State<EditorPage> {
     });
   }
 
+  void _cancelDrawingForMultiTouch() {
+    final stroke = currentStroke;
+    if (stroke == null) {
+      _pendingDrawStart = null;
+      return;
+    }
+
+    // _startDrawing() selalu menyimpan satu snapshot sebelum menambahkan
+    // stroke. Karena stroke ini belum selesai, hapus keduanya dari history.
+    if (strokes.isNotEmpty && identical(strokes.last, stroke)) {
+      strokes.removeLast();
+    }
+    if (_undoStack.isNotEmpty) {
+      _undoStack.removeLast();
+    }
+
+    currentStroke = null;
+    _pendingDrawStart = null;
+  }
+
   void _onPointerDown(PointerDownEvent event) {
     final local = event.localPosition;
     _pointers[event.pointer] = local;
 
     if (_pointers.length >= 2) {
-      currentStroke = null;
+      // Jika jari pertama sempat mulai menggambar sebelum jari kedua masuk,
+      // batalkan stroke yang sedang berlangsung. Dengan begitu gesture pinch
+      // tidak pernah meninggalkan titik/coretan dari sentuhan pertama.
+      _cancelDrawingForMultiTouch();
+      _pendingDrawStart = null;
       _movingHero = null;
       _heroDragOffset = null;
       _wasMultiTouch = true;
@@ -243,15 +300,16 @@ class _EditorPageState extends State<EditorPage> {
 
     if (_pointers.length != 1 || _wasMultiTouch) return;
 
-    final scenePosition = _screenToScene(local);
-    final hero = _hitTestHero(scenePosition);
+    final imagePosition = _screenToImage(local);
+    final hero = _hitTestHero(imagePosition);
 
     if (hero != null) {
+      _pendingDrawStart = null;
       _saveHistory();
       setState(() {
         selectedHeroId = hero.id;
         _movingHero = hero;
-        _heroDragOffset = scenePosition - hero.position;
+        _heroDragOffset = imagePosition - hero.position;
       });
       return;
     }
@@ -259,7 +317,10 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       selectedHeroId = null;
     });
-    _startDrawing(local, saveHistory: true);
+
+    // Tunda pembuatan stroke sampai pointer bergerak atau dilepas.
+    // Ini mencegah titik kecil muncul dari jari pertama saat pinch dimulai.
+    _pendingDrawStart = local;
   }
 
   void _onPointerMove(PointerMoveEvent event) {
@@ -268,6 +329,7 @@ class _EditorPageState extends State<EditorPage> {
     _pointers[event.pointer] = event.localPosition;
 
     if (_pointers.length >= 2) {
+      _pendingDrawStart = null;
       _updateTwoFingerTransform();
       return;
     }
@@ -275,12 +337,19 @@ class _EditorPageState extends State<EditorPage> {
     if (_pointers.length != 1 || _wasMultiTouch) return;
 
     if (_movingHero != null) {
-      final scenePosition = _screenToScene(event.localPosition);
+      _pendingDrawStart = null;
+      final imagePosition = _screenToImage(event.localPosition);
       final offset = _heroDragOffset ?? Offset.zero;
       setState(() {
-        _movingHero!.position = scenePosition - offset;
+        _movingHero!.position = imagePosition - offset;
       });
       return;
+    }
+
+    if (currentStroke == null && _pendingDrawStart != null) {
+      final startPosition = _pendingDrawStart!;
+      _pendingDrawStart = null;
+      _startDrawing(startPosition, saveHistory: true);
     }
 
     _updateDrawing(event.localPosition);
@@ -297,20 +366,29 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     if (_wasMultiTouch) {
+      _pendingDrawStart = null;
       currentStroke = null;
       _movingHero = null;
       _heroDragOffset = null;
       _lastFocalPoint = null;
       _lastDistance = null;
+
+      if (_pointers.isEmpty) {
+        _wasMultiTouch = false;
+      }
       return;
     }
 
     if (_movingHero != null) {
       _movingHero = null;
       _heroDragOffset = null;
+      _pendingDrawStart = null;
       return;
     }
 
+    // Tap tanpa gerakan bukan stroke. Stroke hanya dibuat setelah pointer
+    // benar-benar bergerak, sehingga sentuhan awal tidak meninggalkan titik.
+    _pendingDrawStart = null;
     _endDrawing();
   }
 
@@ -319,6 +397,7 @@ class _EditorPageState extends State<EditorPage> {
     currentStroke = null;
     _movingHero = null;
     _heroDragOffset = null;
+    _pendingDrawStart = null;
 
     if (_pointers.isEmpty) {
       _wasMultiTouch = false;
@@ -363,7 +442,7 @@ class _EditorPageState extends State<EditorPage> {
       scaleFactor = 1.0;
     }
 
-    final newScale = (_scale * scaleFactor).clamp(0.5, 8.0);
+    final newScale = (_scale * scaleFactor).clamp(0.5, 20.0);
     final actualScale = newScale / _scale;
 
     final Matrix4 next = Matrix4.identity();
@@ -382,11 +461,39 @@ class _EditorPageState extends State<EditorPage> {
     _lastDistance = distance;
   }
 
+  Offset _screenToScene(Offset screenPosition) {
+    final inverse = Matrix4.inverted(_transform);
+    return MatrixUtils.transformPoint(inverse, screenPosition);
+  }
+
+  Offset _screenToImage(Offset screenPosition) {
+    final scene = _screenToScene(screenPosition);
+    return Offset(
+      (scene.dx - _imageRect.left) / _fitScale,
+      (scene.dy - _imageRect.top) / _fitScale,
+    );
+  }
+
+  bool _imageContains(Offset imagePosition) {
+    return imagePosition.dx >= 0 &&
+        imagePosition.dy >= 0 &&
+        imagePosition.dx <= _imageSize.width &&
+        imagePosition.dy <= _imageSize.height;
+  }
+
   void _startDrawing(Offset screenPosition, {required bool saveHistory}) {
+    final imagePosition = _screenToImage(screenPosition);
+    if (!_imageContains(imagePosition)) return;
+
     if (saveHistory) _saveHistory();
 
-    final scenePosition = _screenToScene(screenPosition);
-    final stroke = DrawingStroke(points: [scenePosition], brushSize: brushSize);
+    final stroke = DrawingStroke(
+      points: [imagePosition],
+      // Brush size is stored in image pixels, so it follows the image through
+      // zoom, pan, resize, and orientation changes.
+      brushSize: brushSize / _fitScale,
+      color: brushColor,
+    );
 
     setState(() {
       currentStroke = stroke;
@@ -398,22 +505,18 @@ class _EditorPageState extends State<EditorPage> {
     final stroke = currentStroke;
     if (stroke == null) return;
 
-    final scenePosition = _screenToScene(screenPosition);
+    final imagePosition = _screenToImage(screenPosition);
+    if (!_imageContains(imagePosition)) return;
     if (stroke.points.isNotEmpty) {
       final last = stroke.points.last;
-      if ((scenePosition - last).distance < 1.0) return;
+      if ((imagePosition - last).distance < (1.0 / _fitScale)) return;
     }
 
-    setState(() => stroke.points.add(scenePosition));
+    setState(() => stroke.points.add(imagePosition));
   }
 
   void _endDrawing() {
     currentStroke = null;
-  }
-
-  Offset _screenToScene(Offset screenPosition) {
-    final inverse = Matrix4.inverted(_transform);
-    return MatrixUtils.transformPoint(inverse, screenPosition);
   }
 
   HeroObject? _hitTestHero(Offset scenePosition) {
@@ -426,10 +529,8 @@ class _EditorPageState extends State<EditorPage> {
         local.dx * sinA + local.dy * cosA,
       );
 
-      const baseWidth = 92.0;
-      const baseHeight = 128.0;
-      final halfW = baseWidth * hero.scale / 2;
-      final halfH = baseHeight * hero.scale / 2;
+      final halfW = hero.baseWidth * hero.scale / 2;
+      final halfH = hero.baseHeight * hero.scale / 2;
 
       if (rotated.dx.abs() <= halfW && rotated.dy.abs() <= halfH) {
         return hero;
@@ -438,15 +539,17 @@ class _EditorPageState extends State<EditorPage> {
     return null;
   }
 
-  void _addHero(_HeroDefinition definition, Size canvasSize) {
+  void _addHero(_HeroDefinition definition) {
     _saveHistory();
 
     final hero = HeroObject(
       id: 'hero_${++_heroCounter}',
       name: definition.name,
       assetPath: definition.assetPath,
-      position: Offset(canvasSize.width / 2, canvasSize.height / 2),
-      scale: 1.0,
+      position: Offset(_imageSize.width / 2, _imageSize.height / 2),
+      scale: heroDefaultScale,
+      baseWidth: heroBaseWidth / _fitScale,
+      baseHeight: heroBaseHeight / _fitScale,
     );
 
     setState(() {
@@ -478,9 +581,11 @@ class _EditorPageState extends State<EditorPage> {
       id: 'hero_${++_heroCounter}',
       name: copy.name,
       assetPath: copy.assetPath,
-      position: copy.position + const Offset(28, 28),
+      position: copy.position + Offset(28 / _fitScale, 28 / _fitScale),
       scale: copy.scale,
       rotation: copy.rotation,
+      baseWidth: copy.baseWidth,
+      baseHeight: copy.baseHeight,
     );
 
     setState(() {
@@ -495,7 +600,7 @@ class _EditorPageState extends State<EditorPage> {
 
     _saveHistory();
     setState(() {
-      hero.scale = (hero.scale * factor).clamp(0.35, 3.0);
+      hero.scale = (hero.scale * factor).clamp(0.35, 2.5);
     });
   }
 
@@ -509,95 +614,125 @@ class _EditorPageState extends State<EditorPage> {
     });
   }
 
-  void _showHeroPicker(Size canvasSize) {
+  void _showHeroPicker() {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: panelDark,
       isScrollControlled: true,
+      useSafeArea: true,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
       builder: (sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 14, 18, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 42,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.white24,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final landscape = constraints.maxWidth > constraints.maxHeight;
+            final cardWidth = landscape ? 118.0 : 112.0;
+            final imageHeight = landscape ? 112.0 : 118.0;
+
+            return SizedBox(
+              height: landscape ? 205 : 230,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.shield_rounded, color: cyanColor),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Add Hero',
-                      style: _font(
-                        size: 18,
-                        weight: FontWeight.w800,
-                        color: Colors.white,
+                    Row(
+                      children: [
+                        Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            color: activeColor,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(
+                            Icons.shield_rounded,
+                            color: cyanColor,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        Text(
+                          'Add Hero',
+                          style: _font(
+                            size: 17,
+                            weight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          'Geser →',
+                          style: _font(
+                            size: 10,
+                            weight: FontWeight.w600,
+                            color: const Color(0xFF7F899F),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        itemCount: heroDefinitions.length,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(width: 8),
+                        itemBuilder: (context, index) {
+                          final definition = heroDefinitions[index];
+                          return SizedBox(
+                            width: cardWidth,
+                            child: Material(
+                              color: const Color(0xFF171C2E),
+                              borderRadius: BorderRadius.circular(14),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () => _addHero(definition),
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    6,
+                                    5,
+                                    6,
+                                    6,
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      SizedBox(
+                                        height: imageHeight,
+                                        child: Image.asset(
+                                          definition.assetPath,
+                                          fit: BoxFit.contain,
+                                          filterQuality: FilterQuality.high,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        definition.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        textAlign: TextAlign.center,
+                                        style: _font(
+                                          size: 9,
+                                          weight: FontWeight.w700,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 14),
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: heroDefinitions.length,
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 10,
-                    mainAxisSpacing: 10,
-                    childAspectRatio: 0.88,
-                  ),
-                  itemBuilder: (context, index) {
-                    final definition = heroDefinitions[index];
-                    return Material(
-                      color: const Color(0xFF171C2E),
-                      borderRadius: BorderRadius.circular(16),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () => _addHero(definition, canvasSize),
-                        child: Padding(
-                          padding: const EdgeInsets.all(7),
-                          child: Column(
-                            children: [
-                              Expanded(
-                                child: Image.asset(
-                                  definition.assetPath,
-                                  fit: BoxFit.contain,
-                                  filterQuality: FilterQuality.high,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                definition.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: _font(
-                                  size: 10,
-                                  weight: FontWeight.w700,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -605,6 +740,9 @@ class _EditorPageState extends State<EditorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final canUndo = _undoStack.isNotEmpty;
+    final canRedo = _redoStack.isNotEmpty;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
         statusBarColor: backgroundColor,
@@ -615,94 +753,82 @@ class _EditorPageState extends State<EditorPage> {
       ),
       child: Scaffold(
         backgroundColor: backgroundColor,
-        appBar: _buildAppBar(),
-        body: Column(
-          children: [
-            Expanded(child: _buildCanvas()),
-            _buildBottomBar(),
-          ],
+        body: SafeArea(
+          bottom: false,
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  Expanded(child: _buildCanvas()),
+                  _buildBottomBar(),
+                ],
+              ),
+              Positioned(
+                left: 8,
+                top: 8,
+                child: _floatingIconButton(
+                  icon: Icons.arrow_back_rounded,
+                  tooltip: 'Kembali',
+                  onTap: () => Navigator.pop(context),
+                ),
+              ),
+              Positioned(
+                right: 8,
+                top: 8,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _floatingIconButton(
+                      icon: Icons.center_focus_strong_rounded,
+                      tooltip: 'Reset zoom',
+                      onTap: _resetTransform,
+                    ),
+                    const SizedBox(width: 4),
+                    _floatingIconButton(
+                      icon: Icons.undo_rounded,
+                      tooltip: 'Undo',
+                      onTap: canUndo ? _undo : null,
+                    ),
+                    const SizedBox(width: 4),
+                    _floatingIconButton(
+                      icon: Icons.redo_rounded,
+                      tooltip: 'Redo',
+                      onTap: canRedo ? _redo : null,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
-    final canUndo = _undoStack.isNotEmpty;
-    final canRedo = _redoStack.isNotEmpty;
-    final hasSelection = _selectedHero != null;
-
-    return AppBar(
-      backgroundColor: backgroundColor,
-      surfaceTintColor: Colors.transparent,
-      elevation: 0,
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back_rounded, size: 28),
-        color: Colors.white,
-        onPressed: () => Navigator.pop(context),
-      ),
-      titleSpacing: 0,
-      title: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.asset(
-                'assets/images/drawerx_icon.png',
-                fit: BoxFit.cover,
-              ),
+  Widget _floatingIconButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: const Color(0xCC0D1222),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            width: 42,
+            height: 42,
+            child: Icon(
+              icon,
+              color: onTap == null ? const Color(0xFF454C60) : Colors.white,
+              size: 22,
             ),
           ),
-          const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'DrawerX Editor',
-                style: _font(
-                  size: 16,
-                  weight: FontWeight.w800,
-                  color: Colors.white,
-                ),
-              ),
-              Text(
-                hasSelection
-                    ? _selectedHero!.name
-                    : '1 jari coret • 2 jari zoom',
-                style: _font(
-                  size: 10,
-                  weight: FontWeight.w500,
-                  color: const Color(0xFF9DA6BA),
-                ),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
-      actions: [
-        IconButton(
-          tooltip: 'Reset zoom',
-          onPressed: _resetTransform,
-          icon: const Icon(Icons.center_focus_strong_rounded, size: 22),
-          color: Colors.white,
-        ),
-        IconButton(
-          tooltip: 'Undo',
-          onPressed: canUndo ? _undo : null,
-          icon: const Icon(Icons.undo_rounded, size: 23),
-          color: canUndo ? Colors.white : const Color(0xFF454C60),
-        ),
-        IconButton(
-          tooltip: 'Redo',
-          onPressed: canRedo ? _redo : null,
-          icon: const Icon(Icons.redo_rounded, size: 23),
-          color: canRedo ? Colors.white : const Color(0xFF454C60),
-        ),
-        const SizedBox(width: 2),
-      ],
     );
   }
 
@@ -723,18 +849,25 @@ class _EditorPageState extends State<EditorPage> {
             final imageHeight = image.height.toDouble();
             final viewportWidth = constraints.maxWidth;
             final viewportHeight = constraints.maxHeight;
-            _canvasSize = Size(viewportWidth, viewportHeight);
-
             final widthRatio = viewportWidth / imageWidth;
             final heightRatio = viewportHeight / imageHeight;
             final fitScale = widthRatio < heightRatio
                 ? widthRatio
                 : heightRatio;
 
+            _imageSize = Size(imageWidth, imageHeight);
+            _fitScale = fitScale;
+
             final imageWidthOnScreen = imageWidth * fitScale;
             final imageHeightOnScreen = imageHeight * fitScale;
             final imageLeft = (viewportWidth - imageWidthOnScreen) / 2;
             final imageTop = (viewportHeight - imageHeightOnScreen) / 2;
+            _imageRect = Rect.fromLTWH(
+              imageLeft,
+              imageTop,
+              imageWidthOnScreen,
+              imageHeightOnScreen,
+            );
 
             return Listener(
               behavior: HitTestBehavior.opaque,
@@ -765,18 +898,30 @@ class _EditorPageState extends State<EditorPage> {
                         ),
                         Positioned.fill(
                           child: CustomPaint(
-                            painter: _DrawingPainter(strokes: strokes),
+                            painter: _DrawingPainter(
+                              strokes: strokes,
+                              imageRect: _imageRect,
+                              fitScale: fitScale,
+                            ),
                           ),
                         ),
                         Positioned.fill(
                           child: IgnorePointer(
                             child: Stack(
                               children: heroes.map((hero) {
+                                final screenX =
+                                    imageLeft + hero.position.dx * fitScale;
+                                final screenY =
+                                    imageTop + hero.position.dy * fitScale;
+                                final width =
+                                    hero.baseWidth * hero.scale * fitScale;
+                                final height =
+                                    hero.baseHeight * hero.scale * fitScale;
                                 return Positioned(
-                                  left: hero.position.dx - (46 * hero.scale),
-                                  top: hero.position.dy - (64 * hero.scale),
-                                  width: 92 * hero.scale,
-                                  height: 128 * hero.scale,
+                                  left: screenX - width / 2,
+                                  top: screenY - height / 2,
+                                  width: width,
+                                  height: height,
                                   child: Transform.rotate(
                                     angle: hero.rotation,
                                     child: Image.asset(
@@ -796,6 +941,8 @@ class _EditorPageState extends State<EditorPage> {
                               painter: _HeroPainter(
                                 heroes: heroes,
                                 selectedHeroId: selectedHeroId,
+                                imageRect: _imageRect,
+                                fitScale: fitScale,
                               ),
                             ),
                           ),
@@ -823,46 +970,52 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildHeroBar(HeroObject hero) {
-    return Container(
-      height: 82,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-      decoration: const BoxDecoration(
-        color: panelDark,
-        border: Border(top: BorderSide(color: Colors.white10)),
-      ),
-      child: Row(
-        children: [
-          _toolButton(
-            icon: Icons.remove_rounded,
-            label: 'Kecil',
-            onTap: () => _resizeSelectedHero(0.88),
+    return SafeArea(
+      top: false,
+      child: Container(
+        height: 70,
+        padding: const EdgeInsets.fromLTRB(8, 4, 8, 5),
+        decoration: const BoxDecoration(
+          color: panelDark,
+          border: Border(top: BorderSide(color: Colors.white10)),
+        ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _toolButton(
+                icon: Icons.remove_rounded,
+                label: 'Kecil',
+                onTap: () => _resizeSelectedHero(0.88),
+              ),
+              _toolButton(
+                icon: Icons.add_rounded,
+                label: 'Besar',
+                onTap: () => _resizeSelectedHero(1.14),
+              ),
+              _toolButton(
+                icon: Icons.rotate_left_rounded,
+                label: 'Putar',
+                onTap: () => _rotateSelectedHero(-0.15),
+              ),
+              _toolButton(
+                icon: Icons.rotate_right_rounded,
+                label: 'Putar',
+                onTap: () => _rotateSelectedHero(0.15),
+              ),
+              _toolButton(
+                icon: Icons.copy_rounded,
+                label: 'Duplikat',
+                onTap: _duplicateSelectedHero,
+              ),
+              _toolButton(
+                icon: Icons.delete_outline_rounded,
+                label: 'Hapus',
+                onTap: _deleteSelectedHero,
+              ),
+            ],
           ),
-          _toolButton(
-            icon: Icons.add_rounded,
-            label: 'Besar',
-            onTap: () => _resizeSelectedHero(1.14),
-          ),
-          _toolButton(
-            icon: Icons.rotate_left_rounded,
-            label: 'Putar',
-            onTap: () => _rotateSelectedHero(-0.15),
-          ),
-          _toolButton(
-            icon: Icons.rotate_right_rounded,
-            label: 'Putar',
-            onTap: () => _rotateSelectedHero(0.15),
-          ),
-          _toolButton(
-            icon: Icons.copy_rounded,
-            label: 'Duplikat',
-            onTap: _duplicateSelectedHero,
-          ),
-          _toolButton(
-            icon: Icons.delete_outline_rounded,
-            label: 'Hapus',
-            onTap: _deleteSelectedHero,
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -872,14 +1025,15 @@ class _EditorPageState extends State<EditorPage> {
     required String label,
     required VoidCallback onTap,
   }) {
-    return Expanded(
+    return SizedBox(
+      width: 64,
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(13),
           onTap: onTap,
           child: SizedBox(
-            height: 58,
+            height: 56,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -901,110 +1055,186 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
+  void _eraseAllStrokes() {
+    if (strokes.isEmpty) return;
+
+    _saveHistory();
+    setState(() {
+      strokes.clear();
+      currentStroke = null;
+    });
+  }
+
   Widget _buildBrushBar() {
-    return Container(
-      height: 82,
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
-      decoration: const BoxDecoration(
-        color: panelDark,
-        border: Border(top: BorderSide(color: Colors.white10)),
+    return SafeArea(
+      top: false,
+      child: Container(
+        height: 82,
+        padding: const EdgeInsets.fromLTRB(8, 5, 8, 6),
+        decoration: const BoxDecoration(
+          color: panelDark,
+          border: Border(top: BorderSide(color: Colors.white10)),
+        ),
+        child: Row(
+          children: [
+            _brushActionButton(
+              icon: Icons.add_rounded,
+              label: 'HERO',
+              onTap: _showHeroPicker,
+              highlighted: true,
+            ),
+            const SizedBox(width: 7),
+            _brushActionButton(
+              icon: Icons.delete_sweep_outlined,
+              label: 'HAPUS SEMUA',
+              onTap: _eraseAllStrokes,
+            ),
+            const SizedBox(width: 9),
+            Expanded(child: _buildBrushSettings()),
+          ],
+        ),
       ),
-      child: Row(
+    );
+  }
+
+  Widget _buildBrushSettings() {
+    return Container(
+      height: 80,
+      padding: const EdgeInsets.fromLTRB(10, 4, 8, 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF171C2E),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
         children: [
-          Material(
-            color: activeColor,
-            borderRadius: BorderRadius.circular(13),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(13),
-              onTap: () {
-                _showHeroPicker(_canvasSize);
-              },
-              child: const SizedBox(
-                width: 54,
-                height: 58,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.add_rounded, color: cyanColor, size: 25),
-                    SizedBox(height: 1),
-                    Text(
-                      'HERO',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 8,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ],
+          Row(
+            children: [
+              const Icon(
+                Icons.palette_rounded,
+                color: Colors.white70,
+                size: 17,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'Warna',
+                style: _font(
+                  size: 9,
+                  weight: FontWeight.w600,
+                  color: const Color(0xFF9DA6BA),
                 ),
               ),
-            ),
+              const SizedBox(width: 7),
+              Expanded(child: _buildColorPicker()),
+              const SizedBox(width: 6),
+              Text(
+                '${brushSize.toStringAsFixed(1)} px',
+                style: _font(
+                  size: 10,
+                  weight: FontWeight.w800,
+                  color: Colors.white,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Container(
-            width: 40,
-            height: 58,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.05),
-              borderRadius: BorderRadius.circular(13),
-            ),
-            child: const Icon(
-              Icons.brush_rounded,
-              color: Colors.white70,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 8),
           Expanded(
             child: Row(
-              children: brushSizes.map((size) {
-                final active = brushSize == size;
-                return Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                    child: Material(
-                      color: active ? activeColor : const Color(0xFF171C2E),
-                      borderRadius: BorderRadius.circular(13),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(13),
-                        onTap: () {
-                          setState(() => brushSize = size);
-                        },
-                        child: SizedBox(
-                          height: 58,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Container(
-                                width: size.clamp(4, 18),
-                                height: size.clamp(4, 18),
-                                decoration: const BoxDecoration(
-                                  color: Colors.red,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 5),
-                              Text(
-                                '${size.toInt()}',
-                                style: _font(
-                                  size: 11,
-                                  weight: FontWeight.w700,
-                                  color: active
-                                      ? Colors.white
-                                      : const Color(0xFF9DA6BA),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
+              children: [
+                const Icon(
+                  Icons.brush_rounded,
+                  color: Colors.white54,
+                  size: 16,
+                ),
+                Expanded(
+                  child: Slider(
+                    value: brushSize,
+                    min: 1.0,
+                    max: 40.0,
+                    divisions: 390,
+                    label: '${brushSize.toStringAsFixed(1)} px',
+                    activeColor: brushColor,
+                    inactiveColor: Colors.white12,
+                    onChanged: (value) {
+                      setState(() => brushSize = value);
+                    },
                   ),
-                );
-              }).toList(),
+                ),
+              ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildColorPicker() {
+    return SizedBox(
+      height: 27,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        itemCount: brushColors.length,
+        separatorBuilder: (_, index) => const SizedBox(width: 5),
+        itemBuilder: (context, index) {
+          final color = brushColors[index];
+          final active = brushColor == color;
+          return GestureDetector(
+            onTap: () => setState(() => brushColor = color),
+            child: Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: active ? Colors.white : Colors.white24,
+                  width: active ? 2.5 : 1,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _brushActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool highlighted = false,
+  }) {
+    return Material(
+      color: highlighted ? activeColor : const Color(0xFF171C2E),
+      borderRadius: BorderRadius.circular(13),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(13),
+        onTap: onTap,
+        child: SizedBox(
+          width: highlighted ? 54 : 72,
+          height: 60,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                color: highlighted ? cyanColor : Colors.white,
+                size: 23,
+              ),
+              const SizedBox(height: 3),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _font(
+                  size: 8,
+                  weight: FontWeight.w800,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1012,16 +1242,26 @@ class _EditorPageState extends State<EditorPage> {
 
 class _DrawingPainter extends CustomPainter {
   final List<DrawingStroke> strokes;
+  final Rect imageRect;
+  final double fitScale;
 
-  _DrawingPainter({required this.strokes});
+  _DrawingPainter({
+    required this.strokes,
+    required this.imageRect,
+    required this.fitScale,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.translate(imageRect.left, imageRect.top);
+    canvas.scale(fitScale);
+
     for (final stroke in strokes) {
       if (stroke.points.isEmpty) continue;
 
       final paint = Paint()
-        ..color = Colors.red
+        ..color = stroke.color
         ..strokeWidth = stroke.brushSize
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
@@ -1033,7 +1273,7 @@ class _DrawingPainter extends CustomPainter {
           stroke.points.first,
           stroke.brushSize / 2,
           Paint()
-            ..color = Colors.red
+            ..color = stroke.color
             ..style = PaintingStyle.fill
             ..isAntiAlias = true,
         );
@@ -1064,6 +1304,8 @@ class _DrawingPainter extends CustomPainter {
 
       canvas.drawPath(path, paint);
     }
+
+    canvas.restore();
   }
 
   @override
@@ -1073,28 +1315,42 @@ class _DrawingPainter extends CustomPainter {
 class _HeroPainter extends CustomPainter {
   final List<HeroObject> heroes;
   final String? selectedHeroId;
+  final Rect imageRect;
+  final double fitScale;
 
-  _HeroPainter({required this.heroes, required this.selectedHeroId});
+  _HeroPainter({
+    required this.heroes,
+    required this.selectedHeroId,
+    required this.imageRect,
+    required this.fitScale,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     for (final hero in heroes) {
       if (hero.id != selectedHeroId) continue;
 
+      final screenPosition = Offset(
+        imageRect.left + hero.position.dx * fitScale,
+        imageRect.top + hero.position.dy * fitScale,
+      );
+
       canvas.save();
-      canvas.translate(hero.position.dx, hero.position.dy);
+      canvas.translate(screenPosition.dx, screenPosition.dy);
       canvas.rotate(hero.rotation);
-      canvas.scale(hero.scale);
+
+      final width = hero.baseWidth * hero.scale * fitScale;
+      final height = hero.baseHeight * hero.scale * fitScale;
 
       final borderPaint = Paint()
         ..color = const Color(0xFF00D9FF)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0 / hero.scale;
+        ..strokeWidth = 2.0;
 
       canvas.drawRRect(
         RRect.fromRectAndRadius(
-          Rect.fromCenter(center: Offset.zero, width: 92, height: 128),
-          const Radius.circular(10),
+          Rect.fromCenter(center: Offset.zero, width: width, height: height),
+          Radius.circular(10 * fitScale),
         ),
         borderPaint,
       );
