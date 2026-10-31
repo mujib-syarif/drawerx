@@ -118,6 +118,7 @@ class _EditorPageState extends State<EditorPage> {
   Offset? _pendingDrawStart;
 
   HeroObject? _movingHero;
+  bool _heroMoved = false;
   Offset? _heroDragOffset;
 
   final List<_EditorSnapshot> _undoStack = [];
@@ -305,6 +306,7 @@ class _EditorPageState extends State<EditorPage> {
 
     if (hero != null) {
       _pendingDrawStart = null;
+      _heroMoved = false;
       _saveHistory();
       setState(() {
         selectedHeroId = hero.id;
@@ -340,6 +342,7 @@ class _EditorPageState extends State<EditorPage> {
       _pendingDrawStart = null;
       final imagePosition = _screenToImage(event.localPosition);
       final offset = _heroDragOffset ?? Offset.zero;
+      _heroMoved = true;
       setState(() {
         _movingHero!.position = imagePosition - offset;
       });
@@ -380,6 +383,11 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     if (_movingHero != null) {
+      // Tap tanpa geser hanya memilih hero; jangan tinggalkan snapshot undo kosong.
+      if (!_heroMoved && _undoStack.isNotEmpty) {
+        _undoStack.removeLast();
+      }
+      _heroMoved = false;
       _movingHero = null;
       _heroDragOffset = null;
       _pendingDrawStart = null;
@@ -600,7 +608,7 @@ class _EditorPageState extends State<EditorPage> {
 
     _saveHistory();
     setState(() {
-      hero.scale = (hero.scale * factor).clamp(0.35, 2.5);
+      hero.scale = (hero.scale * factor).clamp(0.1, 2.5);
     });
   }
 
@@ -838,6 +846,14 @@ class _EditorPageState extends State<EditorPage> {
         return FutureBuilder<ui.Image>(
           future: _decodedImage,
           builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const Center(
+                child: Text(
+                  'Gagal memuat gambar',
+                  style: TextStyle(color: Colors.white70),
+                ),
+              );
+            }
             if (!snapshot.hasData) {
               return const Center(
                 child: CircularProgressIndicator(color: cyanColor),
