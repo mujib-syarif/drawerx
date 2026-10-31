@@ -26,11 +26,9 @@ class BubbleService : Service() {
     override fun onCreate() {
         super.onCreate()
 
-        if (!Settings.canDrawOverlays(this)) {
-            stopSelf()
-            return
-        }
-
+        // Service dijalankan lewat startForegroundService(): startForeground()
+        // wajib dipanggil dulu, sebelum cek izin atau stopSelf(), agar tidak
+        // memicu ForegroundServiceDidNotStartInTimeException.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
@@ -42,6 +40,11 @@ class BubbleService : Service() {
                 startForeground(NOTIFICATION_ID, createNotification())
             }
         } catch (exception: Exception) {
+            stopSelf()
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
         }
