@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:photo_manager/photo_manager.dart';
 
 class EditorPage extends StatefulWidget {
   final Uint8List image;
@@ -109,6 +110,7 @@ class _EditorPageState extends State<EditorPage> {
   double _scale = 1.0;
   Rect _imageRect = Rect.zero;
   Size _imageSize = Size.zero;
+  bool _saving = false;
   double _fitScale = 1.0;
 
   final Map<int, Offset> _pointers = {};
@@ -815,6 +817,12 @@ class _EditorPageState extends State<EditorPage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _floatingIconButton(
+                      icon: Icons.save_alt_rounded,
+                      tooltip: 'Simpan ke galeri',
+                      onTap: _saving ? null : _saveImage,
+                    ),
+                    const SizedBox(width: 4),
+                    _floatingIconButton(
                       icon: Icons.center_focus_strong_rounded,
                       tooltip: 'Reset zoom',
                       onTap: _resetTransform,
@@ -839,6 +847,104 @@ class _EditorPageState extends State<EditorPage> {
         ),
       ),
     );
+  }
+
+  /// Merender gambar dasar + goresan + hero ke PNG pada resolusi asli gambar.
+  Future<Uint8List> _renderPng() async {
+    final base = await _decodedImage;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    canvas.drawImage(
+      base,
+      Offset.zero,
+      Paint()..filterQuality = FilterQuality.high,
+    );
+    _paintStrokes(canvas, strokes);
+
+    final heroImages = <String, ui.Image>{};
+    try {
+      for (final hero in heroes) {
+        var heroImage = heroImages[hero.assetPath];
+        if (heroImage == null) {
+          final data = await rootBundle.load(hero.assetPath);
+          heroImage = await _decodeImage(data.buffer.asUint8List());
+          heroImages[hero.assetPath] = heroImage;
+        }
+
+        // Sama dengan BoxFit.contain pada tampilan layar.
+        final boxWidth = hero.baseWidth * hero.scale;
+        final boxHeight = hero.baseHeight * hero.scale;
+        final imageWidth = heroImage.width.toDouble();
+        final imageHeight = heroImage.height.toDouble();
+        final fit = math.min(boxWidth / imageWidth, boxHeight / imageHeight);
+
+        canvas.save();
+        canvas.translate(hero.position.dx, hero.position.dy);
+        canvas.rotate(hero.rotation);
+        canvas.drawImageRect(
+          heroImage,
+          Rect.fromLTWH(0, 0, imageWidth, imageHeight),
+          Rect.fromCenter(
+            center: Offset.zero,
+            width: imageWidth * fit,
+            height: imageHeight * fit,
+          ),
+          Paint()..filterQuality = FilterQuality.high,
+        );
+        canvas.restore();
+      }
+
+      final picture = recorder.endRecording();
+      ui.Image? output;
+      try {
+        output = await picture.toImage(base.width, base.height);
+        final bytes = await output.toByteData(format: ui.ImageByteFormat.png);
+        if (bytes == null) {
+          throw StateError('Gagal meng-encode PNG');
+        }
+        return bytes.buffer.asUint8List();
+      } finally {
+        output?.dispose();
+        picture.dispose();
+      }
+    } finally {
+      for (final image in heroImages.values) {
+        image.dispose();
+      }
+    }
+  }
+
+  Future<void> _saveImage() async {
+    if (_saving) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _saving = true);
+
+    String message;
+    try {
+      final bytes = await _renderPng();
+      await PhotoManager.editor.saveImage(
+        bytes,
+        filename: 'drawerx_${DateTime.now().millisecondsSinceEpoch}.png',
+        relativePath: 'Pictures/DrawerX',
+      );
+      message = 'Tersimpan ke galeri (Pictures/DrawerX)';
+    } on PlatformException catch (e) {
+      debugPrint('Save error: ${e.message}');
+      message = 'Gagal menyimpan gambar';
+    } on MissingPluginException catch (e) {
+      debugPrint('Save error: ${e.message}');
+      message = 'Gagal menyimpan gambar';
+    } catch (e) {
+      debugPrint('Save error: $e');
+      message = 'Gagal menyimpan gambar';
+    }
+
+    if (mounted) {
+      setState(() => _saving = false);
+    }
+    messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _floatingIconButton({
