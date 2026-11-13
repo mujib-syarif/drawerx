@@ -139,11 +139,15 @@ class _EditorPageState extends State<EditorPage> {
     Colors.white,
   ];
 
-  // Ukuran dasar Hero di canvas. Nilai ini sengaja dibuat lebih kecil
-  // supaya Hero tidak menutupi area base terlalu besar saat pertama ditambahkan.
+  // Ukuran dasar Hero (dp layar pada zoom 1x). Skala awal 0.62 menghasilkan
+  // Hero sekitar 55x75 dp: cukup kecil agar tidak menutupi base, tetapi masih
+  // terlihat dan mudah disentuh.
   static const double heroBaseWidth = 88.0;
   static const double heroBaseHeight = 120.0;
-  static const double heroDefaultScale = 0.20;
+  static const double heroDefaultScale = 0.62;
+
+  // Area sentuh minimum Hero (dp layar).
+  static const double minTouchTarget = 48.0;
 
   static const List<_HeroDefinition> heroDefinitions = [
     _HeroDefinition(
@@ -168,14 +172,27 @@ class _EditorPageState extends State<EditorPage> {
   @override
   void initState() {
     super.initState();
-    _decodedImage = ui
-        .instantiateImageCodec(widget.image)
-        .then((codec) => codec.getNextFrame())
-        .then((frame) => frame.image);
+    _decodedImage = _decodeImage(widget.image);
+  }
+
+  static Future<ui.Image> _decodeImage(Uint8List bytes) async {
+    final codec = await ui.instantiateImageCodec(bytes);
+    try {
+      final frame = await codec.getNextFrame();
+      return frame.image;
+    } finally {
+      codec.dispose();
+    }
   }
 
   @override
   void dispose() {
+    // Gambar dasar hanya dipakai lewat Image.memory dan saat ekspor, jadi
+    // aman dilepas di sini.
+    _decodedImage.then<void>(
+      (image) => image.dispose(),
+      onError: (Object error, StackTrace stackTrace) {},
+    );
     super.dispose();
   }
 
@@ -495,11 +512,13 @@ class _EditorPageState extends State<EditorPage> {
 
     if (saveHistory) _saveHistory();
 
+    // Ukuran kuas di layar tetap (dp) walau di-zoom: bagi dengan fitScale dan
+    // zoom. Disimpan dalam piksel gambar agar ikut gambar saat pan/rotasi.
+    final effectiveScale = _fitScale * _scale;
+
     final stroke = DrawingStroke(
       points: [imagePosition],
-      // Brush size is stored in image pixels, so it follows the image through
-      // zoom, pan, resize, and orientation changes.
-      brushSize: brushSize / _fitScale,
+      brushSize: brushSize / effectiveScale,
       color: brushColor,
     );
 
@@ -513,11 +532,18 @@ class _EditorPageState extends State<EditorPage> {
     final stroke = currentStroke;
     if (stroke == null) return;
 
-    final imagePosition = _screenToImage(screenPosition);
-    if (!_imageContains(imagePosition)) return;
+    // Titik di luar gambar di-clamp ke tepi, bukan dibuang, agar goresan
+    // yang keluar batas tidak putus.
+    final rawPosition = _screenToImage(screenPosition);
+    final imagePosition = Offset(
+      rawPosition.dx.clamp(0.0, _imageSize.width).toDouble(),
+      rawPosition.dy.clamp(0.0, _imageSize.height).toDouble(),
+    );
     if (stroke.points.isNotEmpty) {
       final last = stroke.points.last;
-      if ((imagePosition - last).distance < (1.0 / _fitScale)) return;
+      if ((imagePosition - last).distance < (1.0 / (_fitScale * _scale))) {
+        return;
+      }
     }
 
     setState(() => stroke.points.add(imagePosition));
@@ -537,8 +563,10 @@ class _EditorPageState extends State<EditorPage> {
         local.dx * sinA + local.dy * cosA,
       );
 
-      final halfW = hero.baseWidth * hero.scale / 2;
-      final halfH = hero.baseHeight * hero.scale / 2;
+      // Area sentuh minimal 48 dp layar (dikonversi ke piksel gambar).
+      final minHalf = minTouchTarget / 2 / (_fitScale * _scale);
+      final halfW = math.max(hero.baseWidth * hero.scale / 2, minHalf);
+      final halfH = math.max(hero.baseHeight * hero.scale / 2, minHalf);
 
       if (rotated.dx.abs() <= halfW && rotated.dy.abs() <= halfH) {
         return hero;
@@ -636,7 +664,7 @@ class _EditorPageState extends State<EditorPage> {
           builder: (context, constraints) {
             final landscape = constraints.maxWidth > constraints.maxHeight;
             final cardWidth = landscape ? 118.0 : 112.0;
-            final imageHeight = landscape ? 112.0 : 118.0;
+            final imageHeight = landscape ? 100.0 : 118.0;
 
             return SizedBox(
               height: landscape ? 205 : 230,
@@ -673,7 +701,7 @@ class _EditorPageState extends State<EditorPage> {
                         Text(
                           'Geser →',
                           style: _font(
-                            size: 10,
+                            size: 11,
                             weight: FontWeight.w600,
                             color: const Color(0xFF7F899F),
                           ),
@@ -722,7 +750,7 @@ class _EditorPageState extends State<EditorPage> {
                                         overflow: TextOverflow.ellipsis,
                                         textAlign: TextAlign.center,
                                         style: _font(
-                                          size: 9,
+                                          size: 11,
                                           weight: FontWeight.w700,
                                           color: Colors.white,
                                         ),
@@ -827,12 +855,12 @@ class _EditorPageState extends State<EditorPage> {
           customBorder: const CircleBorder(),
           onTap: onTap,
           child: SizedBox(
-            width: 42,
-            height: 42,
+            width: 48,
+            height: 48,
             child: Icon(
               icon,
               color: onTap == null ? const Color(0xFF454C60) : Colors.white,
-              size: 22,
+              size: 24,
             ),
           ),
         ),
@@ -1058,7 +1086,7 @@ class _EditorPageState extends State<EditorPage> {
                 Text(
                   label,
                   style: _font(
-                    size: 9,
+                    size: 11,
                     weight: FontWeight.w600,
                     color: const Color(0xFF9DA6BA),
                   ),
@@ -1085,7 +1113,7 @@ class _EditorPageState extends State<EditorPage> {
     return SafeArea(
       top: false,
       child: Container(
-        height: 82,
+        height: 114,
         padding: const EdgeInsets.fromLTRB(8, 5, 8, 6),
         decoration: const BoxDecoration(
           color: panelDark,
@@ -1096,13 +1124,15 @@ class _EditorPageState extends State<EditorPage> {
             _brushActionButton(
               icon: Icons.add_rounded,
               label: 'HERO',
+              tooltip: 'Tambah hero',
               onTap: _showHeroPicker,
               highlighted: true,
             ),
             const SizedBox(width: 7),
             _brushActionButton(
               icon: Icons.delete_sweep_outlined,
-              label: 'HAPUS SEMUA',
+              label: 'HAPUS',
+              tooltip: 'Hapus semua coretan',
               onTap: _eraseAllStrokes,
             ),
             const SizedBox(width: 9),
@@ -1115,7 +1145,7 @@ class _EditorPageState extends State<EditorPage> {
 
   Widget _buildBrushSettings() {
     return Container(
-      height: 80,
+      height: 103,
       padding: const EdgeInsets.fromLTRB(10, 4, 8, 3),
       decoration: BoxDecoration(
         color: const Color(0xFF171C2E),
@@ -1134,7 +1164,7 @@ class _EditorPageState extends State<EditorPage> {
               Text(
                 'Warna',
                 style: _font(
-                  size: 9,
+                  size: 11,
                   weight: FontWeight.w600,
                   color: const Color(0xFF9DA6BA),
                 ),
@@ -1145,7 +1175,7 @@ class _EditorPageState extends State<EditorPage> {
               Text(
                 '${brushSize.toStringAsFixed(1)} px',
                 style: _font(
-                  size: 10,
+                  size: 11,
                   weight: FontWeight.w800,
                   color: Colors.white,
                 ),
@@ -1184,31 +1214,64 @@ class _EditorPageState extends State<EditorPage> {
 
   Widget _buildColorPicker() {
     return SizedBox(
-      height: 27,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        itemCount: brushColors.length,
-        separatorBuilder: (_, index) => const SizedBox(width: 5),
-        itemBuilder: (context, index) {
-          final color = brushColors[index];
-          final active = brushColor == color;
-          return GestureDetector(
-            onTap: () => setState(() => brushColor = color),
-            child: Container(
-              width: 22,
-              height: 22,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: active ? Colors.white : Colors.white24,
-                  width: active ? 2.5 : 1,
+      height: 48,
+      child: Stack(
+        children: [
+          ListView.builder(
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            itemCount: brushColors.length,
+            itemBuilder: (context, index) {
+              final color = brushColors[index];
+              final active = brushColor == color;
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => brushColor = color),
+                // Area sentuh 48x48 dp; lingkaran warna 26 dp di tengah.
+                child: SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: Center(
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: active ? Colors.white : Colors.white24,
+                          width: active ? 2.5 : 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          // Petunjuk bahwa daftar warna bisa digeser.
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            child: IgnorePointer(
+              child: Container(
+                width: 28,
+                alignment: Alignment.centerRight,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0x00171C2E), Color(0xFF171C2E)],
+                  ),
+                ),
+                child: const Icon(
+                  Icons.chevron_right_rounded,
+                  color: Colors.white70,
+                  size: 20,
                 ),
               ),
             ),
-          );
-        },
+          ),
+        ],
       ),
     );
   }
@@ -1217,17 +1280,18 @@ class _EditorPageState extends State<EditorPage> {
     required IconData icon,
     required String label,
     required VoidCallback onTap,
+    String? tooltip,
     bool highlighted = false,
   }) {
-    return Material(
+    final button = Material(
       color: highlighted ? activeColor : const Color(0xFF171C2E),
       borderRadius: BorderRadius.circular(13),
       child: InkWell(
         borderRadius: BorderRadius.circular(13),
         onTap: onTap,
         child: SizedBox(
-          width: highlighted ? 54 : 72,
-          height: 60,
+          width: highlighted ? 64 : 72,
+          height: 64,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -1243,7 +1307,7 @@ class _EditorPageState extends State<EditorPage> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: _font(
-                  size: 8,
+                  size: 11,
                   weight: FontWeight.w800,
                   color: Colors.white,
                 ),
@@ -1253,6 +1317,61 @@ class _EditorPageState extends State<EditorPage> {
         ),
       ),
     );
+
+    if (tooltip == null) return button;
+    return Tooltip(message: tooltip, child: button);
+  }
+}
+
+/// Menggambar semua goresan dalam koordinat piksel gambar. Dipakai oleh
+/// painter layar dan oleh ekspor PNG supaya hasilnya identik.
+void _paintStrokes(Canvas canvas, List<DrawingStroke> strokes) {
+  for (final stroke in strokes) {
+    if (stroke.points.isEmpty) continue;
+
+    final paint = Paint()
+      ..color = stroke.color
+      ..strokeWidth = stroke.brushSize
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+
+    if (stroke.points.length == 1) {
+      canvas.drawCircle(
+        stroke.points.first,
+        stroke.brushSize / 2,
+        Paint()
+          ..color = stroke.color
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = true,
+      );
+      continue;
+    }
+
+    final path = Path();
+    path.moveTo(stroke.points.first.dx, stroke.points.first.dy);
+
+    for (int i = 1; i < stroke.points.length - 1; i++) {
+      final current = stroke.points[i];
+      final next = stroke.points[i + 1];
+      final midpoint = Offset(
+        (current.dx + next.dx) / 2,
+        (current.dy + next.dy) / 2,
+      );
+      path.quadraticBezierTo(
+        current.dx,
+        current.dy,
+        midpoint.dx,
+        midpoint.dy,
+      );
+    }
+
+    final previous = stroke.points[stroke.points.length - 2];
+    final last = stroke.points.last;
+    path.quadraticBezierTo(previous.dx, previous.dy, last.dx, last.dy);
+
+    canvas.drawPath(path, paint);
   }
 }
 
@@ -1272,55 +1391,7 @@ class _DrawingPainter extends CustomPainter {
     canvas.save();
     canvas.translate(imageRect.left, imageRect.top);
     canvas.scale(fitScale);
-
-    for (final stroke in strokes) {
-      if (stroke.points.isEmpty) continue;
-
-      final paint = Paint()
-        ..color = stroke.color
-        ..strokeWidth = stroke.brushSize
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..style = PaintingStyle.stroke
-        ..isAntiAlias = true;
-
-      if (stroke.points.length == 1) {
-        canvas.drawCircle(
-          stroke.points.first,
-          stroke.brushSize / 2,
-          Paint()
-            ..color = stroke.color
-            ..style = PaintingStyle.fill
-            ..isAntiAlias = true,
-        );
-        continue;
-      }
-
-      final path = Path();
-      path.moveTo(stroke.points.first.dx, stroke.points.first.dy);
-
-      for (int i = 1; i < stroke.points.length - 1; i++) {
-        final current = stroke.points[i];
-        final next = stroke.points[i + 1];
-        final midpoint = Offset(
-          (current.dx + next.dx) / 2,
-          (current.dy + next.dy) / 2,
-        );
-        path.quadraticBezierTo(
-          current.dx,
-          current.dy,
-          midpoint.dx,
-          midpoint.dy,
-        );
-      }
-
-      final previous = stroke.points[stroke.points.length - 2];
-      final last = stroke.points.last;
-      path.quadraticBezierTo(previous.dx, previous.dy, last.dx, last.dy);
-
-      canvas.drawPath(path, paint);
-    }
-
+    _paintStrokes(canvas, strokes);
     canvas.restore();
   }
 
