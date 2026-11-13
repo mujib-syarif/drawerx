@@ -97,4 +97,4 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: false
-  image_path: "assets/images/drawerx_logo.png"
+  image_path: "assets/images/drawerx_icon.png"
