@@ -9,7 +9,12 @@ class DrawerXApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'DrawerX',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        colorSchemeSeed: Colors.blue,
+        scaffoldBackgroundColor: const Color(0xFF070B18),
+      ),
       home: const HomePage(),
     );
   }

@@ -14,7 +14,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const MethodChannel _channel = MethodChannel('drawerx/bubble');
 
   AssetEntity? latestScreenshot;
@@ -24,13 +24,32 @@ class _HomePageState extends State<HomePage> {
 
   bool bubbleActive = false;
   bool loading = true;
+  bool permissionDenied = false;
+  bool _loadingData = false;
 
   @override
   void initState() {
     super.initState();
 
+    WidgetsBinding.instance.addObserver(this);
     loadData();
     checkBubbleStatus();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Setelah bubble diketuk (atau kembali dari Pengaturan) aplikasi kembali ke
+    // depan: muat ulang agar screenshot terbaru dan status bubble tidak basi.
+    if (state == AppLifecycleState.resumed) {
+      loadData();
+      checkBubbleStatus();
+    }
   }
 
   Future<void> checkBubbleStatus() async {
@@ -44,40 +63,49 @@ class _HomePageState extends State<HomePage> {
       });
     } on PlatformException catch (e) {
       debugPrint('Bubble status error: ${e.message}');
+    } on MissingPluginException catch (e) {
+      debugPrint('Bubble status error: ${e.message}');
     }
   }
 
   Future<void> loadData() async {
+    // Hindari pemuatan ganda (mis. resumed saat dialog izin masih tampil).
+    if (_loadingData) return;
+    _loadingData = true;
+
+    var denied = false;
+    AssetEntity? screenshot;
+    Uint8List? newThumbnail;
+    Uint8List? newFullImage;
+
     try {
       final granted = await MediaService.requestPermission();
 
       if (!granted) {
-        if (mounted) {
-          setState(() {
-            loading = false;
-          });
+        denied = true;
+      } else {
+        screenshot = await MediaService.getLatestScreenshot();
+
+        if (screenshot != null) {
+          newThumbnail = await MediaService.getThumbnail(screenshot);
+          newFullImage = await screenshot.originBytes;
         }
-        return;
-      }
-
-      final screenshot = await MediaService.getLatestScreenshot();
-
-      if (screenshot != null) {
-        latestScreenshot = screenshot;
-
-        thumbnail = await MediaService.getThumbnail(screenshot);
-
-        fullImage = await screenshot.originBytes;
       }
     } catch (e) {
       debugPrint('Screenshot loading error: $e');
+    } finally {
+      _loadingData = false;
     }
 
-    if (mounted) {
-      setState(() {
-        loading = false;
-      });
-    }
+    if (!mounted) return;
+
+    setState(() {
+      permissionDenied = denied;
+      latestScreenshot = screenshot;
+      thumbnail = newThumbnail;
+      fullImage = newFullImage;
+      loading = false;
+    });
   }
 
   Future<void> enableBubble() async {
@@ -99,6 +127,8 @@ class _HomePageState extends State<HomePage> {
       }
     } on PlatformException catch (e) {
       debugPrint('Bubble error: ${e.message}');
+    } on MissingPluginException catch (e) {
+      debugPrint('Bubble error: ${e.message}');
     }
   }
 
@@ -112,6 +142,8 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } on PlatformException catch (e) {
+      debugPrint('Bubble error: ${e.message}');
+    } on MissingPluginException catch (e) {
       debugPrint('Bubble error: ${e.message}');
     }
   }
@@ -239,32 +271,6 @@ class _HomePageState extends State<HomePage> {
 
             _buildBubbleCard(),
 
-            const SizedBox(height: 20),
-
-            Row(
-              children: [
-                Expanded(
-                  child: _buildMenuCard(
-                    icon: Icons.photo_library_rounded,
-                    title: 'Galeri',
-                    subtitle: 'Lihat screenshot',
-                    onTap: () {},
-                  ),
-                ),
-
-                const SizedBox(width: 12),
-
-                Expanded(
-                  child: _buildMenuCard(
-                    icon: Icons.settings_rounded,
-                    title: 'Pengaturan',
-                    subtitle: 'Atur DrawerX',
-                    onTap: () {},
-                  ),
-                ),
-              ],
-            ),
-
             const SizedBox(height: 28),
 
             Center(
@@ -376,6 +382,62 @@ class _HomePageState extends State<HomePage> {
         ),
 
         child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (permissionDenied) {
+      return Container(
+        height: 220,
+        width: double.infinity,
+
+        decoration: BoxDecoration(
+          color: const Color(0xFF101528),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: Colors.white10),
+        ),
+
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+
+          children: [
+            const Icon(
+              Icons.lock_outline_rounded,
+              size: 42,
+              color: Color(0xFF7E879D),
+            ),
+
+            const SizedBox(height: 10),
+
+            Text(
+              'Izin galeri ditolak',
+              style: _font(
+                size: 13,
+                weight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+
+            const SizedBox(height: 4),
+
+            Text(
+              'DrawerX butuh akses foto untuk menampilkan screenshot.',
+              textAlign: TextAlign.center,
+              style: _font(
+                size: 11,
+                weight: FontWeight.w400,
+                color: const Color(0xFFB0B7C9),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
+              onPressed: () => PhotoManager.openSetting(),
+              child: const Text('Buka Pengaturan'),
+            ),
+          ],
+        ),
       );
     }
 
@@ -546,72 +608,6 @@ class _HomePageState extends State<HomePage> {
             disableBubble();
           }
         },
-      ),
-    );
-  }
-
-  Widget _buildMenuCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-
-      borderRadius: BorderRadius.circular(20),
-
-      child: Container(
-        padding: const EdgeInsets.all(16),
-
-        decoration: BoxDecoration(
-          color: const Color(0xFF101528),
-
-          borderRadius: BorderRadius.circular(20),
-
-          border: Border.all(color: Colors.white10),
-        ),
-
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(13),
-
-                color: Colors.white.withValues(alpha: 0.06),
-              ),
-
-              child: Icon(icon, color: const Color(0xFFE1E5EF)),
-            ),
-
-            const SizedBox(height: 14),
-
-            Text(
-              title,
-              style: _font(
-                size: 13,
-                weight: FontWeight.w700,
-                color: Colors.white,
-              ),
-            ),
-
-            const SizedBox(height: 3),
-
-            Text(
-              subtitle,
-              style: _font(
-                size: 11,
-                weight: FontWeight.w400,
-                color: const Color(0xFF9DA6BA),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

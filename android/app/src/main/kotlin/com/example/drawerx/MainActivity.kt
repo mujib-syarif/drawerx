@@ -10,6 +10,10 @@ class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "drawerx/bubble"
 
+    private companion object {
+        const val NOTIFICATION_PERMISSION_REQUEST = 4101
+    }
+
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
     ) {
@@ -55,6 +59,21 @@ class MainActivity : FlutterActivity() {
                         )
 
                         return@setMethodCallHandler
+                    }
+
+                    // Android 13+: notifikasi foreground service butuh izin runtime.
+                    // Bubble tetap berjalan bila ditolak, hanya notifikasinya tersembunyi.
+                    if (
+                        android.os.Build.VERSION.SDK_INT >=
+                        android.os.Build.VERSION_CODES.TIRAMISU &&
+                        checkSelfPermission(
+                            android.Manifest.permission.POST_NOTIFICATIONS
+                        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        requestPermissions(
+                            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                            NOTIFICATION_PERMISSION_REQUEST
+                        )
                     }
 
                     val intent = Intent(
